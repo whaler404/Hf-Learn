@@ -13,11 +13,11 @@ Rotary Position Embedding (RoPE) 是一种用于 Transformer 模型的位置编�
 
 ### 2.1 数学基础
 
-RoPE 的核心思想是通过复数旋转来表示位置信息。对于第 m 个位置的向量 `x_m`，将其旋转 `mθ` 角度：
+RoPE 的核心思想是通过复数旋转来表示位置信息。对于第 m 个位置的向量 $x_m$，将其旋转 $m\theta$ 角度：
 
-```
-f(x, m) = x * e^(imθ)
-```
+$$
+f(x, m) = x \cdot e^{i_m\theta}
+$$
 
 其中：
 - `x` 是词向量

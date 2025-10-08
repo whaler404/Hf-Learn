@@ -17,41 +17,41 @@ DeepSeekV3 MoE 的核心思想包括：
 
 ### 3.1 路由机制
 
-给定输入 `x ∈ R^d`，路由网络计算每个专家的得分：
+给定输入 $x \in R^d$，路由网络计算每个专家的得分：
 
-```
+$$
 s_i = w_i^T * x + b_i
-```
+$$
 
-其中 `w_i` 是第 `i` 个专家的权重向量。
+其中 $w_i$ 是第 $i$ 个专家的权重向量。
 
-通过 sigmoid 激活得到专家选择概率：
+通过 $sigmoid$ 激活得到专家选择概率：
 
-```
+$$
 p_i = σ(s_i)
-```
+$$
 
 ### 3.2 Top-K 选择
 
-选择分数最高的 `k` 个专家：
+选择分数最高的 $k$ 个专家：
 
-```
-I = topk_indices(p_1, p_2, ..., p_n, k)
-```
+$$
+I = \text{topk}_\text{indices}(p_1, p_2, ..., p_n, k)
+$$
 
 归一化权重：
 
-```
-w_i' = w_i / Σ_{j∈I} w_j
-```
+$$
+w_i' = w_i \sum_{j\in I} w_j
+$$
 
 ### 3.3 专家输出
 
 最终输出是加权组合：
 
-```
-y = Σ_{i∈I} w_i' * E_i(x) + E_shared(x)
-```
+$$
+y = \sum_{i\in I} w_i' * E_i(x) + E_\text{shared}(x)
+$$
 
 ## 核心组件
 
@@ -276,7 +276,7 @@ final_hidden_states = torch.zeros_like(hidden_states_flat, dtype=topk_weights.dt
 expert_mask = torch.nn.functional.one_hot(topk_indices, num_classes=256)  # [4096, 8, 256]
 expert_mask = expert_mask.permute(2, 0, 1)  # [256, 4096, 8]
 
-# Step 4: 逐个专家处理
+# Step 4: 逐个专家处理，多个专家并行
 for expert_idx in range(256):
     mask = expert_mask[expert_idx]  # [4096, 8]
     token_indices, weight_indices = torch.where(mask)  # 找出需要处理的token
