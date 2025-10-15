@@ -632,26 +632,143 @@ def compute_transition_scores(
 
 ### 24. `_update_model_kwargs_for_generation()` - 模型参数更新
 
-**功能**: 更新生成过程中的模型参数。
-
-**输入参数**:
 ```python
 def _update_model_kwargs_for_generation(
     self,
-    outputs: ModelOutput,
-    model_kwargs: Dict[str, Any],
-    is_encoder_decoder: bool = False,
-) -> Dict[str, Any]:
+    outputs: ModelOutput,                    # 模型前向传播的输出
+    model_kwargs: dict[str, Any],           # 当前步骤的模型输入参数
+    is_encoder_decoder: bool = False,       # 是否为编码器-解码器模型
+    num_new_tokens: int = 1,                # 新生成的token数量
+) -> dict[str, Any]:
+    # ========================================================================
+    # 步骤1: 更新KV缓存 (past_key_values)
+    # ========================================================================
+    # ALL_CACHE_NAMES = ["past_key_values", "past_buckets_states", "mems", "cache"]
+    # 目的: 从模型输出中提取KV缓存，为下一步生成保存历史状态
+    for possible_cache_name in ALL_CACHE_NAMES:
+        if possible_cache_name in outputs:
+            # TODO (joao): remove output/input mismatch when these old models (xlnet, reformer) are deprecated
+            if possible_cache_name in ("past_buckets_states", "mems"):
+                cache_name = "past_key_values"  # 统一缓存命名
+            else:
+                cache_name = possible_cache_name
+            model_kwargs[cache_name] = getattr(outputs, possible_cache_name)
+            break
+    # outputs.past_key_values = [
+    #   (key_states: torch.Size([batch_size, num_heads, seq_len, head_dim]),
+    #    value_states: torch.Size([batch_size, num_heads, seq_len, head_dim]))
+    # ]
+
+    # ========================================================================
+    # 步骤2: 更新token_type_ids
+    # ========================================================================
+    # 目的: 扩展token_type_ids以匹配新生成的token
+    if "token_type_ids" in model_kwargs:
+        token_type_ids = model_kwargs["token_type_ids"]
+        # 沿最后一个维度拼接，复制最后一个token的类型
+        model_kwargs["token_type_ids"] = torch.cat([token_type_ids, token_type_ids[:, -1].unsqueeze(-1)], dim=-1)
+
+    # token_type_ids: torch.Size([batch_size, seq_len])
+    # token_type_ids[:, -1] -> torch.Size([batch_size])
+    #        .unsqueeze(-1) -> torch.Size([batch_size, 1])
+    #       torch.cat([...], dim=-1) -> torch.Size([batch_size, seq_len + 1])
+
+    # ========================================================================
+    # 步骤3: 根据模型类型更新注意力掩码
+    # ========================================================================
+    if not is_encoder_decoder:
+        # --------------------------------------------------------------------
+        # 3a: Decoder-only模型注意力掩码更新
+        # --------------------------------------------------------------------
+        if "attention_mask" in model_kwargs:
+            attention_mask = model_kwargs["attention_mask"]
+            # 创建全1的新列，表示新生成的token应该被注意到
+            model_kwargs["attention_mask"] = torch.cat(
+                [attention_mask, attention_mask.new_ones((attention_mask.shape[0], 1))], dim=-1
+            )
+
+        # attention_mask: torch.Size([batch_size, seq_len])
+        # attention_mask.new_ones((batch_size, 1)) -> torch.Size([batch_size, 1])
+        #       torch.cat([...], dim=-1) -> torch.Size([batch_size, seq_len + 1])
+
+    else:
+        # --------------------------------------------------------------------
+        # 3b: Encoder-Decoder模型解码器注意力掩码更新
+        # --------------------------------------------------------------------
+        if "decoder_attention_mask" in model_kwargs:
+            decoder_attention_mask = model_kwargs["decoder_attention_mask"]
+            # 同样为新生成的token添加注意力权重
+            model_kwargs["decoder_attention_mask"] = torch.cat(
+                [decoder_attention_mask, decoder_attention_mask.new_ones((decoder_attention_mask.shape[0], 1))],
+                dim=-1,
+            )
+
+        # decoder_attention_mask: torch.Size([batch_size, decoder_seq_len])
+        #  -> torch.Size([batch_size, decoder_seq_len + 1])
+
+    # ========================================================================
+    # 步骤4: 更新缓存位置 (cache_position)
+    # ========================================================================
+    # 目的: 更新缓存位置，指示下一步应该访问哪个缓存位置
+    if model_kwargs.get("use_cache", True):
+        model_kwargs["cache_position"] = model_kwargs["cache_position"][-1:] + num_new_tokens
+
+    # 张量变化示例:
+    # 输入: model_kwargs["cache_position"]: torch.Size([query_len])
+    # 操作: [-1:] -> torch.Size([1])
+    #       + num_new_tokens -> torch.Size([1])
+    # 输出: model_kwargs["cache_position"]: torch.Size([1])  # 下一步的位置
+
+    return model_kwargs
 ```
 
-**输出**: 更新后的模型kwargs
+#### toekn type ids
 
-**逻辑流程**:
-1. **缓存更新**: 更新KV缓存
-2. **注意力掩码更新**: 更新注意力掩码
-3. **位置编码更新**: 更新位置编码
-4. **其他参数更新**: 更新其他相关参数
-5. **返回结果**: 返回更新后的kwargs
+`token_type_ids` 是一个张量，用于 **区分输入中的不同“语义段”**（segments）。最典型的应用是 BERT 中的句子对任务，例如自然语言推理（NLI）或问答任务中需要分别编码句子 A 和句子 B。
+```python
+token_type_ids = [0, 0, 0, 1, 1, 1]
+# 表示前3个 token 属于 segment A，后3个属于 segment B
+```
+
+| 模型结构            | token_type_ids 支持情况   | 典型用途           |
+| --------------- | --------------------- | -------------- |
+| Encoder-only    | ✔️（如 BERT）            | 句子对任务，分段对比     |
+| Encoder-Decoder | ❌（如 T5, BART）         | 不支持，输入输出分开处理   |
+| Decoder-only    | ❌（GPT类） / ✔️（ChatGLM） | 默认不支持，某些对话模型支持 |
+
+#### attention mask
+
+`attention_mask`：这是最初级的 mask，由用户或 tokenizer 生成，传入模型，表示“这个位置是否是有效 token”
+```python
+# attention_mask.shape = [batch, seq_len]
+attention_mask = torch.tensor([[1, 1, 1, 0]])
+
+causal_mask = torch.tril(torch.ones((1, 1, 4, 4)))  # 下三角为1
+extended_mask = attention_mask[:, None, None, :]    # [1,1,1,4]
+final_mask = causal_mask * extended_mask  # [1,1,4,4]
+
+print(final_mask)
+# tensor([[[[1., 0., 0., 0.],
+#           [1., 1., 0., 0.],
+#           [1., 1., 1., 0.],
+#           [1., 1., 1., 0.]]]])
+```
+
+#### cache position
+
+`cache_position`：记录 **当前要插入的位置**，用于：
+- KV 缓存的索引定位（例如 KV Cache 的 rotary embedding）
+- 与 positional encoding 结合
+
+```python
+model_kwargs["cache_position"] = torch.tensor([0, 1, 2, 3])
+num_new_tokens = 1
+model_kwargs["cache_position"] = model_kwargs["cache_position"][-1:] + num_new_tokens
+# => torch.tensor([4])
+# 告诉模型下一个位置是第 4 个位置，应该将生成的 token 的 K/V 插入到这个 index 中。
+```
+
+这个方法是生成循环中的关键环节，确保每个步骤的输入都正确更新，支持增量生成和高效的缓存利用。
 
 ---
 
@@ -709,26 +826,127 @@ def heal_tokens(
 
 ### 27. `_prefill_chunking()` - 预填充分块
 
-**功能**: 执行预填充分块处理。
+**功能**: 执行预填充分块处理，优化长序列的初始推理阶段。这是大模型推理中 **Prefill 阶段** 的分块优化实现。
 
 **输入参数**:
 ```python
 def _prefill_chunking(
     self,
-    input_ids: torch.LongTensor,
-    generation_config: GenerationConfig,
-    **model_kwargs
+    input_ids: torch.LongTensor,          # 输入token序列
+    generation_config: GenerationConfig,   # 生成配置
+    **model_kwargs                        # 其他模型参数
 ):
 ```
 
-**输出**: 更新后的模型kwargs
+**输出**: 更新后的模型kwargs，包含完整的KV缓存
 
-**逻辑流程**:
-1. **分块计算**: 计算适当的分块大小
-2. **输入分块**: 将输入分成适当的块
-3. **逐块处理**: 逐块执行前向传播
-4. **缓存更新**: 更新缓存状态
-5. **返回结果**: 返回处理后的kwargs
+#### 大模型推理的 Prefill 阶段
+
+大模型推理的两个阶段：
+
+1. **Prefill 阶段**：
+   - 处理完整的输入序列（prompt）
+   - 计算所有输入token的KV缓存
+   - 一次性处理整个序列，计算密集
+   - 时间复杂度：$O(n^2 d)$，其中n是序列长度，d是模型维度
+
+2. **Decode 阶段**：
+   - 逐个生成新token
+   - 复用prefill阶段的KV缓存
+   - 每次只计算一个token，轻量级
+   - 时间复杂度：$O(nd)$，线性复杂度
+
+**问题**：
+- 模型在 prefill 阶段必须处理整个 prompt，计算成本高，显存占用大（因为需要缓存整个序列的 KV）。
+- 在多用户并发时，不同用户 prompt 长度不一，导致显存碎片化，GPU 利用率低。
+
+**解决方案**：将 prompt 拆成 chunk 以分批处理，提高吞吐，减少显存峰值
+
+#### 代码分析
+
+```python
+def _prefill_chunking(self, input_ids: torch.LongTensor, generation_config: GenerationConfig, **model_kwargs):
+    # ========================================================================
+    # 步骤1: 编译优化设置
+    # ========================================================================
+    # 增加torch.compile的缓存大小限制，避免分块prefill时产生过多计算图
+    torch._dynamo.config.cache_size_limit = 64
+
+    chunk_size = generation_config.prefill_chunk_size  # 获取分块大小
+
+    # ========================================================================
+    # 步骤2: 输入序列分块
+    # ========================================================================
+    # 为什么要除掉最后一个token？
+    # 因为最后一个token要在decode阶段单独处理，确保解码完全在此函数外执行
+    input_chunks = torch.split(input_ids[:, :-1], chunk_size, dim=-1)
+    # input_ids: torch.Size([batch_size, seq_len])
+    # input_chunks: List[torch.Size([batch_size, chunk_size])]
+    # 最后一个chunk可能小于chunk_size
+
+    if "past_key_values" not in model_kwargs:
+        raise ValueError("Cannot use prefill chunking without a cache")
+    # 必须有缓存才能进行分块prefill，因为要逐步累积KV状态
+
+    # ========================================================================
+    # 步骤3: 模型前向传播准备
+    # ========================================================================
+    model_forward = self.forward  # 获取原始前向传播函数
+
+    # 检查是否满足编译条件，如果满足则使用编译版本加速
+    compile_forward = self._valid_auto_compile_criteria(model_kwargs, generation_config)
+    if compile_forward:
+        model_forward = self.get_compiled_call(generation_config.compile_config)
+
+    # ========================================================================
+    # 步骤4: 逐块Prefill处理
+    # ========================================================================
+    attention_mask = model_kwargs.pop("attention_mask", None)  # 暂时保存 attention_mask: [batch_size, seq_len]
+    past_length = 0  # 记录已处理的序列长度
+
+    for input_chunk in input_chunks:
+        # input_chunk: [batch_size, chunk_size] (最后一个chunk可能更小)
+        current_length = past_length + input_chunk.shape[-1]  # 当前处理后的总长度
+
+        # ====================================================================
+        # 步骤5a: 准备当前chunk的输入参数
+        # ====================================================================
+        if attention_mask is not None:
+            # attention_mask: [batch_size, seq_len] -> attention_mask[:, :current_length]: [batch_size, current_length]
+            model_kwargs["attention_mask"] = attention_mask[:, :current_length]
+
+        # 设置缓存位置：从past_length到current_length-1
+        model_kwargs["cache_position"] = torch.arange(
+            past_length, current_length, dtype=torch.long, device=input_chunk.device
+        )
+        # cache_position: [current_length - past_length] -> [chunk_size]
+
+        # 生成位置编码：每个chunk的位置从0开始，但cache_position确保全局正确性
+        model_kwargs["position_ids"] = model_kwargs["cache_position"].unsqueeze(0)
+        # position_ids: [1, chunk_size]
+
+        # ====================================================================
+        # 步骤5b: 准备模型输入并执行前向传播
+        # ====================================================================
+        # input_chunk: [batch_size, chunk_size]
+        model_inputs = self.prepare_inputs_for_generation(input_chunk, **model_kwargs)
+        outputs = model_forward(**model_inputs, return_dict=True)
+        # outputs.past_key_values: [num_layers, batch_size, num_heads, current_length, head_dim]
+
+        # ====================================================================
+        # 步骤5c: 更新KV缓存
+        # ====================================================================
+        model_kwargs["past_key_values"] = outputs.past_key_values  # 保存累积的KV缓存
+        past_length = current_length  # 更新已处理长度
+
+    # ========================================================================
+    # 步骤6: 恢复完整的attention_mask
+    # ========================================================================
+    model_kwargs["attention_mask"] = attention_mask
+
+    # 返回处理后的kwargs，包含完整的KV缓存
+    return model_kwargs
+```
 
 ---
 
