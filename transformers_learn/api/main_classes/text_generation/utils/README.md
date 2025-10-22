@@ -4,6 +4,8 @@
 
 ## 文档结构
 
+### [method 概览](./methods_overview.md)
+
 ### 1. [推理主流程](./inference_flow.md)
 - `generate()` 方法的完整执行流程
 - 各个阶段的关键步骤和参数处理

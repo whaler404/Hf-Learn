@@ -536,4 +536,3 @@ CLIPTextModel(
 如果 `seq_len` 很大（比如 4k、8k、16k），这个张量是 平方级别增长的。
 
 如果只指定了 `padding='max_length'` ，但没有指定 `max_length` ，默认填充至模型接受的最大长度，自然会 OOM
-å
