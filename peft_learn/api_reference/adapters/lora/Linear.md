@@ -2,6 +2,13 @@
 
 Linear 类是在密集层中实现 LoRA（Low-Rank Adaptation）的核心类，继承自 nn.Module 和 LoraLayer。它为标准 PyTorch 线性层提供 LoRA 适配功能，支持多种 LoRA 变体和初始化方法。
 
+## 核心方法
+
+核心方法：
+- [Linear.\_\_init\_\_](#__init__)
+    - [LoraLayer.update_layer](LoraLayer.md#update_layer)
+- [Linear.forward](#forward)
+
 ## 类描述
 
 Linear 类将 LoRA 适配器应用到标准的 `torch.nn.Linear` 层，通过添加可训练的低秩矩阵来高效地微调模型，大幅减少可训练参数数量。
@@ -62,11 +69,6 @@ lora_layer.update_layer(
 ```
 
 # method
-
-核心方法：
-- [__init__](#__init__)
-    - [update_layer](LoraLayer.md#update_layer)
-- [forward](#forward)
 
 ## 初始化和配置方法
 

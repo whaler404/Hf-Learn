@@ -2,6 +2,20 @@
 
 PeftModel 是 PEFT（Parameter-Efficient Fine-Tuning）库的核心模型类，它封装了各种参数高效微调方法，为不同的预训练模型提供统一的接口。PeftModel 继承自 `PushToHubMixin` 和 `torch.nn.Module`，支持多种微调技术，如 LoRA、Prefix Tuning、Prompt Tuning 等。
 
+## 核心方法
+
+- [PeftModel.\_\_init\_\_](#__init__)
+  - prompt learning: 
+    - [PeftModel.add_adapter](#add_adapter)
+      - [PeftModel._setup_prompt_encoder](#_setup_prompt_encoder)
+        - [PrefixEncoder.\_\_init\_\_](../../adapters/prefix-tuning/PrefixEncoder.md#__init__)
+  - lora
+    - [BaseTuner.\_\_init\_\_](../tuners/BaseTuner.md#init)
+- [PeftModel.forward](#forward)
+  - [get_base_model](#get_base_model)
+    - prompt learning: [PrefixEncoder.forward](../../adapters/prefix-tuning/PrefixEncoder.md#forward)
+    - lora: [Linear.forward](../../adapters/lora/Linear.md#forward)
+
 ## 类的描述
 
 PeftModel 是一个基础模型，包含各种 PEFT 方法。它为预训练模型添加参数高效的适配器，使得在保持大部分参数冻结的情况下，只训练少量参数就能适应新任务。该类支持多种 PEFT 技术，并提供了适配器管理、模型保存/加载、参数统计等功能。
@@ -26,6 +40,7 @@ PeftModel 是一个基础模型，包含各种 PEFT 方法。它为预训练模�
 
 # 方法
 
+
 ## 初始化和配置方法
 
 ### `__init__`
@@ -38,6 +53,60 @@ PeftModel 是一个基础模型，包含各种 PEFT 方法。它为预训练模�
   - `low_cpu_mem_usage` (`bool`, 默认 `False`): 是否使用低 CPU 内存
 - **返回参数**：无
 
+#### method 解读
+```python
+# 调用父类初始化方法
+super().__init__()
+
+# 设置当前活动的适配器名称
+self.active_adapter = adapter_name
+
+# 从配置中获取 PEFT 类型（如 LoRA、Prefix Tuning 等）
+self.peft_type = peft_config.peft_type
+
+# 定义特殊的前向传播参数，这些参数需要从用户传入的参数中移除
+self.special_peft_forward_args = {"adapter_names"}
+
+# 检查是否为提示学习方法（如 Prompt Tuning、P-Tuning 等）
+self._is_prompt_learning = peft_config.is_prompt_learning
+
+# 根据是否为提示学习采用不同的初始化策略
+if self._is_prompt_learning:
+    # 提示学习方法：直接使用原始模型，并添加适配器
+    # 初始化适配器配置字典，以适配器名称为键
+    self._peft_config = {adapter_name: peft_config}
+    # 保存对基础模型的引用
+    self.base_model = model
+    # 向模型添加适配器（配置为提示学习类型）
+    self.add_adapter(adapter_name, peft_config, low_cpu_mem_usage=low_cpu_mem_usage)
+else:
+    # 参数高效微调方法（如 LoRA、AdaLoRA 等）：使用专门的调优器包装模型
+    self._peft_config = None
+    # 根据 PEFT 类型获取对应的调优器类（如 LoraModel、AdaLoraModel 等）
+    # PeftModel >> BaseTuner
+    cls = PEFT_TYPE_TO_TUNER_MAPPING[peft_config.peft_type]
+    # 根据是否使用低 CPU 内存来选择上下文管理器
+    ctx = init_empty_weights if low_cpu_mem_usage else nullcontext
+    with ctx():
+        # 使用调优器包装基础模型，传入适配器配置映射和适配器名称
+        self.base_model = cls(model, {adapter_name: peft_config}, adapter_name)
+
+# 如果基础模型支持数据类型转换，则配置适配器的数据类型自动转换
+if hasattr(self.base_model, "_cast_adapter_dtype"):
+    self.base_model._cast_adapter_dtype(
+        adapter_name=adapter_name, autocast_adapter_dtype=autocast_adapter_dtype
+    )
+
+# 如果模型启用了梯度检查点，则准备模型以支持梯度检查点
+if getattr(model, "is_gradient_checkpointing", True):
+    model = self.prepare_model_for_gradient_checkpointing(model)
+
+# 为了避免数值差异和意外行为，禁用预训练时的张量并行模拟
+# 这是为了解决 Pytorch 的一个已知问题：https://github.com/pytorch/pytorch/issues/76232
+if hasattr(self.base_model, "config") and hasattr(self.base_model.config, "pretraining_tp"):
+    self.base_model.config.pretraining_tp = 1
+```
+
 ### `add_adapter`
 - **方法描述**：根据传入的配置向模型添加适配器。此适配器未经过训练。要加载训练好的适配器，请使用 [`PeftModel.load_adapter`]。新适配器的名称应该是唯一的。新适配器不会自动设置为活动适配器。
 - **传入参数**：
@@ -45,6 +114,82 @@ PeftModel 是一个基础模型，包含各种 PEFT 方法。它为预训练模�
   - `peft_config` (`PeftConfig`): 要添加的适配器配置
   - `low_cpu_mem_usage` (`bool`, *可选*, 默认 `False`): 在 meta 设备上创建空的适配器权重。用于加速加载保存适配器的过程。创建新的 PEFT 适配器进行训练时不要使用此选项
 - **返回参数**：无
+
+#### method 解读
+```python
+# 根据适配器类型获取对应的前缀映射，用于检查适配器名称是否合规
+prefix = PEFT_TYPE_TO_PREFIX_MAPPING.get(peft_config.peft_type)
+
+# 检查适配器名称是否包含在类型前缀中，如果包含则发出警告
+# 这可能会导致加载时适配器权重的重新初始化
+if prefix and adapter_name in prefix:
+    warnings.warn(
+        f"Adapter name {adapter_name} should not be contained in the prefix {prefix}."
+        "This may lead to reinitialization of the adapter weights during loading."
+    )
+
+# 检查新适配器的类型是否与当前模型的 PEFT 类型一致
+# 不允许在同一个模型中混合不同类型的适配器（如 LoRA 和 Prefix Tuning）
+if peft_config.peft_type != self.peft_type:
+    raise ValueError(
+        f"Cannot combine adapters with different peft types. "
+        f"Found {self.peft_type} and {peft_config.peft_type}."
+    )
+
+try:
+    # 根据适配器类型采用不同的添加策略
+    if peft_config.is_prompt_learning:
+        # 提示学习方法（如 Prompt Tuning、P-Tuning 等）
+        # 将适配器配置添加到配置字典中
+        self.peft_config[adapter_name] = peft_config
+
+        # 获取模型配置的字典表示
+        if hasattr(self.config, "to_dict"):
+            dict_config = self.config.to_dict()
+        else:
+            dict_config = self.config
+
+        # 准备提示学习配置，确保与模型配置兼容
+        peft_config = _prepare_prompt_learning_config(peft_config, dict_config)
+
+        # 设置提示编码器，处理提示的表示和学习
+        self._setup_prompt_encoder(adapter_name)
+
+        # 设置额外的可训练模块（如特定的层或参数）
+        set_additional_trainable_modules(
+            model=self.base_model,
+            peft_config=peft_config,
+            model_config=BaseTuner.get_model_config(self),
+            adapter_name=adapter_name,
+        )
+    elif peft_config.is_adaption_prompt:
+        # 适配提示方法（Adaption Prompt）
+        # 通过基础模型添加适配器
+        self.base_model.add_adapter(adapter_name, peft_config)
+
+        # 设置额外的可训练模块
+        set_additional_trainable_modules(
+            model=self.base_model,
+            peft_config=peft_config,
+            model_config=BaseTuner.get_model_config(self),
+            adapter_name=adapter_name,
+        )
+    else:
+        # 参数高效微调方法（如 LoRA、AdaLoRA 等）
+        # 将适配器配置添加到配置字典中
+        self.peft_config[adapter_name] = peft_config
+
+        # 向基础模型注入适配器，这会在目标模块中添加适配器层
+        self.base_model.inject_adapter(
+            self.base_model.model, adapter_name, low_cpu_mem_usage=low_cpu_mem_usage
+        )
+except Exception:  # 如果添加过程中出现错误，执行回滚操作
+    # 从配置字典中移除已添加的适配器配置，保持模型状态一致性
+    if adapter_name in self.peft_config:
+        del self.peft_config[adapter_name]
+    # 重新抛出异常，让调用者知道添加失败
+    raise
+```
 
 ### `delete_adapter`
 - **方法描述**：删除现有适配器
@@ -231,6 +376,110 @@ PeftModel 是一个基础模型，包含各种 PEFT 方法。它为预训练模�
   - `adapter_name` (`str`): 适配器名称
 - **返回参数**：无
 
+#### method 解读
+```python
+# 获取指定适配器的配置
+config = self.peft_config[adapter_name]
+
+# 如果提示编码器模块不存在，则初始化提示编码器和提示令牌字典
+if not hasattr(self, "prompt_encoder"):
+    self.prompt_encoder = torch.nn.ModuleDict({})  # 存储不同适配器的提示编码器
+    self.prompt_tokens = {}  # 存储不同适配器的提示令牌
+
+# 初始化 transformer 主干模型
+transformer_backbone = None
+# 遍历基础模型的直接子模块
+for name, module in self.base_model.named_children():
+    # 冻结所有子模块的参数，只训练提示相关参数
+    for param in module.parameters():
+        param.requires_grad = False
+    # 如果是 PreTrainedModel 实例，将其标记为 transformer 主干
+    if isinstance(module, PreTrainedModel):
+        # Make sure to freeze Tranformers model
+        if transformer_backbone is None:
+            transformer_backbone = module
+            self.transformer_backbone_name = name  # 保存主干模块名称
+
+# 如果没有找到 transformer 主干，则使用整个基础模型
+if transformer_backbone is None:
+    transformer_backbone = self.base_model
+
+# 如果没有指定 transformer 子模块数量，则根据任务类型设置
+if config.num_transformer_submodules is None:
+    # SEQ_2_SEQ_LM 任务（如 T5）需要 2 个子模块（编码器和解码器）
+    # 其他任务只需要 1 个子模块
+    config.num_transformer_submodules = 2 if config.task_type == TaskType.SEQ_2_SEQ_LM else 1
+
+# 确定词嵌入层的位置
+word_embeddings = None
+try:
+    # 首先尝试通过标准路径找到词嵌入（适用于 BERT、RoBERTa、DeBERTa 等模型）
+    word_embeddings = self.base_model.get_submodule("embeddings.word_embeddings")
+except AttributeError:
+    pass
+
+# 如果通过标准路径没有找到词嵌入，则通过参数大小推断
+if word_embeddings is None:
+    # 遍历 transformer 主干的所有命名参数，找到与词汇表大小匹配的参数
+    for named_param, value in list(transformer_backbone.named_parameters()):
+        # 处理 ZeRO-3 分布式训练情况，DeepSpeed 会将分片张量修改为形状 [0]
+        # 实际的未分片形状存储在 "ds_shape" 属性中
+        deepspeed_distributed_tensor_shape = getattr(value, "ds_shape", None)
+
+        # 处理多模态模型（VLM）的情况，获取文本配置中的词汇表大小
+        if hasattr(self.base_model.config, "get_text_config"):
+            vocab_size = self.base_model.config.get_text_config().vocab_size
+        # 兼容旧版本 transformers 的多模态配置
+        elif "text_config" in self.base_model.config:
+            vocab_size = self.base_model.config.text_config.vocab_size
+        else:
+            vocab_size = self.base_model.config.vocab_size
+
+        # 检查参数的第一个维度是否等于词汇表大小（词嵌入矩阵的特征）
+        if value.shape[0] == vocab_size or (
+            deepspeed_distributed_tensor_shape is not None
+            and deepspeed_distributed_tensor_shape[0] == vocab_size
+        ):
+            # 获取该参数对应的模块（去掉 ".weight" 后缀）
+            word_embeddings = transformer_backbone.get_submodule(named_param.replace(".weight", ""))
+            break
+
+# 保存找到的词嵌入模块
+self.word_embeddings = word_embeddings
+
+# 根据 PEFT 类型获取对应的调优器类
+model_cls = PEFT_TYPE_TO_TUNER_MAPPING[config.peft_type]
+
+# 根据不同的提示学习类型创建相应的提示编码器
+if config.peft_type in (PeftType.PROMPT_TUNING, PeftType.MULTITASK_PROMPT_TUNING, PeftType.CPT):
+    # 提示调优、多任务提示调优、CPT：需要词嵌入信息
+    prompt_encoder = model_cls(config, self.word_embeddings)
+elif config.peft_type == PeftType.P_TUNING:
+    # P-Tuning：只需要配置信息
+    prompt_encoder = model_cls(config)
+elif config.peft_type == PeftType.PREFIX_TUNING:
+    # 前缀调优：需要检查是否与梯度检查点兼容
+    # prefix tuning 现在使用 Cache，但与梯度检查点不兼容
+    if any(getattr(module, "gradient_checkpointing", False) for module in self.get_base_model().modules()):
+        raise ValueError("Prefix tuning does not work with gradient checkpointing.")
+    prompt_encoder = model_cls(config)
+else:
+    # 不支持的提示学习类型
+    raise ValueError("Not supported")
+
+# 将提示编码器移动到正确的设备上
+prompt_encoder = prompt_encoder.to(self.device)
+
+# 将新创建的提示编码器添加到 ModuleDict 中
+self.prompt_encoder.update(torch.nn.ModuleDict({adapter_name: prompt_encoder}))
+
+# 为适配器创建提示令牌张量
+# 范围：0 到 (虚拟令牌数 * transformer 子模块数 - 1)
+self.prompt_tokens[adapter_name] = torch.arange(
+    config.num_virtual_tokens * config.num_transformer_submodules
+).long()
+```
+
 ### `get_prompt_embedding_to_save`
 - **方法描述**：返回保存模型时要保存的提示嵌入。仅在使用提示学习方法时适用
 - **传入参数**：
@@ -244,6 +493,133 @@ PeftModel 是一个基础模型，包含各种 PEFT 方法。它为预训练模�
   - `task_ids` (`torch.Tensor`, *可选*): 任务 ID
   - `max_cache_len` (`int`, *可选*): 最大缓存长度
 - **返回参数**：`torch.Tensor` - 虚拟提示张量
+
+#### method 解读
+```python
+# 获取当前活动适配器的配置和提示编码器
+peft_config = self.active_peft_config
+prompt_encoder = self.prompt_encoder[self.active_adapter]
+
+# 准备提示令牌张量：扩展到指定的批次大小并移动到正确的设备
+prompt_tokens = (
+    self.prompt_tokens[self.active_adapter]
+    .unsqueeze(0)  # 添加批次维度
+    .expand(batch_size, -1)  # 扩展到指定的批次大小
+    .to(prompt_encoder.embedding.weight.device)  # 移动到编码器权重所在的设备
+)
+
+# 根据不同的提示学习类型生成提示
+if peft_config.peft_type == PeftType.PREFIX_TUNING:
+    # 前缀调优：生成 past_key_values 用于注意力机制
+    # 只使用前 n 个虚拟令牌
+    prompt_tokens = prompt_tokens[:, : peft_config.num_virtual_tokens]
+
+    if peft_config.inference_mode:
+        # 推理模式：直接使用编码器权重，不进行前向传播
+        past_key_values = prompt_encoder.embedding.weight.repeat(batch_size, 1, 1)
+    else:
+        # 训练模式：通过编码器前向传播生成提示
+        past_key_values = prompt_encoder(prompt_tokens)
+
+    # 转换数据类型以匹配基础模型
+    if self.base_model_torch_dtype is not None:
+        past_key_values = past_key_values.to(self.base_model_torch_dtype)
+
+    # 重塑张量以适应注意力机制的结构
+    # [batch_size, num_virtual_tokens, num_layers*2, num_heads, head_dim]
+    past_key_values = past_key_values.view(
+        batch_size,
+        peft_config.num_virtual_tokens,
+        peft_config.num_layers * 2,  # *2 因为有 key 和 value
+        peft_config.num_attention_heads,
+        peft_config.token_dim // peft_config.num_attention_heads,  # head_dim
+    )
+
+    # 对于编码器-解码器模型，复制一份用于解码器
+    if peft_config.num_transformer_submodules == 2:
+        past_key_values = torch.cat([past_key_values, past_key_values], dim=2)
+
+    # 重新排列维度：[num_layers*2, batch_size, num_heads, num_virtual_tokens, head_dim]
+    # 然后分割成编码器和解码器的缓存
+    past_key_values = past_key_values.permute([2, 0, 3, 1, 4]).split(
+        peft_config.num_transformer_submodules * 2
+    )
+
+    # 获取基础模型配置以进行后处理
+    base_model = self.get_base_model()
+    model_config = getattr(base_model, "config", None)
+    model_type = getattr(model_config, "model_type", "")
+
+    # 根据模型类型应用特定的后处理函数
+    if TRANSFORMERS_MODELS_TO_PREFIX_TUNING_POSTPROCESS_MAPPING.get(self.config.model_type, None) is not None:
+        # 使用模型特定的后处理函数
+        post_process_fn = TRANSFORMERS_MODELS_TO_PREFIX_TUNING_POSTPROCESS_MAPPING[self.config.model_type]
+        past_key_values = post_process_fn(past_key_values)
+    elif ("gemma2" in model_type) or ("gemma3_text" in model_type):
+        # Gemma2 和 Gemma3 特殊处理：使用 HybridCache
+        if max_cache_len is None:
+            raise ValueError(
+                "max_cache_len is None but it should have been passed. Something went wrong, please open an "
+                "issue on GitHub with a reproducer: https://github.com/huggingface/peft/issues"
+            )
+        base_config = base_model.config
+        if hasattr(base_config, "get_text_config"):
+            base_config = base_config.get_text_config()
+
+        # 创建 HybridCache 实例
+        new_cache = HybridCache(
+            base_config,
+            max_batch_size=batch_size,
+            max_cache_len=max_cache_len,
+            dtype=past_key_values[0].dtype,
+            device=past_key_values[0].device,
+        )
+
+        # 更新缓存中的键值对
+        cache_position = torch.arange(peft_config.num_virtual_tokens, device=past_key_values[0].device)
+        for layer_idx in range(peft_config.num_layers):
+            key_states, value_states = past_key_values[0][layer_idx], past_key_values[1][layer_idx]
+            new_cache.update(
+                key_states, value_states, layer_idx, cache_kwargs={"cache_position": cache_position}
+            )
+        past_key_values = new_cache
+    elif peft_config.num_transformer_submodules == 1:
+        # 单模块模型：使用 DynamicCache
+        past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+    elif (peft_config.num_transformer_submodules == 2) and getattr(
+        self.base_model, "_supports_cache_class", True
+    ):
+        # 编码器-解码器模型：使用 EncoderDecoderCache
+        past_key_values = EncoderDecoderCache.from_legacy_cache(past_key_values)
+        past_key_values.cross_attention_cache = DynamicCache()
+        past_key_values.is_updated = {
+            layer_idx: False for layer_idx in range(len(past_key_values.cross_attention_cache.key_cache))
+        }
+
+    # 确保缓存张量在正确的设备上
+    map_cache_to_layer_device_map(self.get_base_model(), past_key_values)
+    return past_key_values
+else:
+    # 其他提示学习方法（Prompt Tuning, P-Tuning, Multitask Prompt Tuning 等）
+    if peft_config.peft_type == PeftType.MULTITASK_PROMPT_TUNING:
+        # 多任务提示调优：需要任务 ID
+        prompts = prompt_encoder(prompt_tokens, task_ids)
+    else:
+        # 单任务提示调优
+        if peft_config.inference_mode:
+            # 推理模式：直接使用编码器权重
+            prompts = prompt_encoder.embedding.weight
+        else:
+            # 训练模式：优化策略 - 只处理一个样本然后重复输出
+            # 这是为了提高效率，避免重复计算相同的编码结果
+            # 参考: https://github.com/huggingface/peft/issues/2043#issuecomment-2321522577
+            prompt_tokens = prompt_tokens[:1]  # 只使用第一个样本的令牌
+            prompts = prompt_encoder(prompt_tokens)  # 编码一次
+
+        # 重复编码结果以匹配批次大小
+        prompts = prompts.repeat(batch_size, 1, 1)
+    return prompts
+```
 
 ## 内部和特殊方法
 

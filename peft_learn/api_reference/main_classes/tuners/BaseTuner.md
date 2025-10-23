@@ -7,12 +7,12 @@
 `BaseTuner` 是 PEFT (Parameter-Efficient Fine-Tuning) 库中所有调优器的抽象基类。它定义了适配器注入和管理的通用框架，为不同的参数高效微调方法（如 LoRA、AdaLoRA 等）提供统一的接口和基础功能。
 
 核心方法：
-- [\_\_init\_\_](#__init__)
-  - [inject_adapter](#inject_adapter)
-    - [_check_target_module_exists](../../adapters/lora/LoraModel.md#_check_target_module_existsstatic)
-      - [check_target_module_exists](utils.md#check_target_module_exists)
-    - [_create_and_replace](../../adapters/lora/LoraModel.md#_create_and_replace)
-    - [_mark_only_adapters_as_trainable](../../adapters/lora/LoraModel.md#_mark_only_adapters_as_trainable)
+- [BaseTuner.\_\_init\_\_](#init) 
+  - [BaseTuner.inject_adapter](#inject_adapter)
+    - [LoraModel._check_target_module_exists](../../adapters/lora/LoraModel.md#_check_target_module_existsstatic)
+      - [BaseTuner.check_target_module_exists](utils.md#check_target_module_exists)
+    - [LoraModel._create_and_replace](../../adapters/lora/LoraModel.md#_create_and_replace)
+    - [LoraModel._mark_only_adapters_as_trainable](../../adapters/lora/LoraModel.md#_mark_only_adapters_as_trainable)
 
 ## 需要重写的方法
 
@@ -67,7 +67,7 @@
 **核心方法** ：
 - [inject_adapter](#inject_adapter)
 
-### \_\_init\_\_
+### init
 - 描述：初始化 BaseTuner 实例，设置模型、配置和相关属性。
 - 输入参数:
   - model (`torch.nn.Module`): 要调优的模型

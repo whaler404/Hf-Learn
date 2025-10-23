@@ -4,6 +4,14 @@
 
 PeftModelForCausalLM 是专为因果语言建模（Causal Language Modeling）任务设计的 PEFT 模型类，继承自 PeftModel。它为自回归文本生成任务提供了特殊的适配器配置和处理逻辑，支持多种参数高效微调方法，包括 LoRA、Prefix Tuning、Prompt Tuning、CPT 等。该类针对不同的 PEFT 方法实现了专门的前向传播逻辑，确保在各种微调策略下都能正确处理序列生成任务。
 
+## 核心方法
+
+- [generate](#generate)
+    - [prepare_inputs_for_generation](#prepare_inputs_for_generation)
+    - [PeftModelForCausalLM.forward](#forward)
+        - prompt_learning: [get_prompt](PeftModel.md#get_prompt)
+
+
 ## 类的参数
 
 - **model** (`~transformers.PreTrainedModel`): 基础 transformer 模型
@@ -247,11 +255,9 @@ PeftModelForCausalLM 的 forward 方法根据 PEFT 配置的类型采用不同�
 
 # generate
 
-## method 介绍
-
 `generate` 方法是 PeftModelForCausalLM 中用于文本生成的核心方法。它为不同的 PEFT 类型提供了专门的生成处理逻辑，确保在生成过程中能够正确应用适配器权重和提示信息。
 
-## 条件处理
+## method 分析
 
 ```python
 def generate(self, *args, **kwargs):
@@ -291,8 +297,6 @@ def generate(self, *args, **kwargs):
 3. **异常恢复**：确保在任何情况下都能正确恢复原始生成配置
 
 # prepare_inputs_for_generation
-
-## 方法介绍
 
 `prepare_inputs_for_generation` 方法是为生成过程准备输入的核心方法。它根据不同的 PEFT 类型和生成阶段，动态调整输入参数，包括缓存处理、注意力掩码调整、提示注入等。
 
@@ -442,14 +446,9 @@ if peft_config.peft_type == PeftType.POLY:
     model_kwargs["task_ids"] = task_ids
 ```
 
-## 总结
 
 `prepare_inputs_for_generation` 方法通过以下步骤确保生成过程的正确性：
 
-1. **版本兼容性检查**：检查 transformers 版本和模型架构，确定缓存支持
-2. **生成阶段判断**：通过 `cache_position` 判断是否在预填充阶段
-3. **动态参数调整**：根据 PEFT 类型和生成状态动态调整各种输入参数
-4. **提示注入**：在适当时机注入提示信息到输入中
-5. **缓存管理**：正确处理 KV 缓存的位置和长度
-
-这种设计确保了不同 PEFT 方法在生成过程中都能正确工作，同时保持了与原始 transformers 生成接口的兼容性。
+1. **生成阶段判断**：通过 `cache_position` 判断是否在预填充阶段
+2. **提示注入**：在适当时机注入提示信息到输入中
+3. **缓存管理**：正确处理 KV 缓存的位置和长度

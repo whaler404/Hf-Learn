@@ -12,6 +12,19 @@
 - **revision** (`str`, 可选, 默认为 `None`): 基础模型的版本。如果未设置，加载的 PEFT 模型将使用基模型的 "main" 版本
 - **low_cpu_mem_usage** (`bool`, 可选, 默认为 `False`): 在 meta 设备上创建空的适配器权重。有助于加速加载过程。如果打算训练模型，请保持此设置为 False，除非适配器权重在训练开始前会被替换为不同的权重
 
+# PeftModel 映射
+
+```python
+MODEL_TYPE_TO_PEFT_MODEL_MAPPING: dict[str, type[PeftModel]] = {
+    "SEQ_CLS": PeftModelForSequenceClassification,
+    "SEQ_2_SEQ_LM": PeftModelForSeq2SeqLM,
+    "CAUSAL_LM": PeftModelForCausalLM,
+    "TOKEN_CLS": PeftModelForTokenClassification,
+    "QUESTION_ANS": PeftModelForQuestionAnswering,
+    "FEATURE_EXTRACTION": PeftModelForFeatureExtraction,
+}
+```
+
 # 方法分析
 
 ```python

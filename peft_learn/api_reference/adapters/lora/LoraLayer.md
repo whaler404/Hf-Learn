@@ -4,6 +4,12 @@ LoraLayer 是 PEFT 库中 LoRA (Low-Rank Adaptation) 适配器的核心基础类
 
 该类支持多种类型的层，包括线性层、嵌入层、卷积层和多头注意力层，并提供了丰富的初始化方法和变体支持（如 DoRA、PiSSA、OLoRA 等）。
 
+**核心方法**
+
+- [LoraLayer.\_\_init\_\_](#__init__)
+- [LoraLayer.updata_layer](#update_layer)
+    - [LoraLayer.reset_lora_parameters](#reset_lora_parameters)
+
 ## 参数
 
 - **base_layer** (nn.Module): 基础模型层，需要添加 LoRA 适配器的原始层
@@ -39,11 +45,6 @@ lora_layer.update_layer(
     lora_bias=False
 )
 ```
-
-## 核心方法
-- [\_\_init\_\_](#__init__)
-- [updata_layer](#update_layer)
-    - [reset_lora_parameters](#reset_lora_parameters)
 
 ---
 

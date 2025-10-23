@@ -6,6 +6,14 @@
 
 LoRA 通过在预训练模型的权重矩阵旁添加低秩矩阵来实现高效的参数微调，大幅减少可训练参数数量，同时保持模型性能。
 
+**核心方法** ：
+- [LoraModel._create_and_replace](#_create_and_replace)
+  - [LoraModel._create_new_module (static)](#_create_new_modulestatic)
+    - [LoraLayer.dispatch_default](LoraLayer.md#dispatch_default)
+      - [Linear.\_\_init\_\_](Linear.md#__init__)
+  - [LoraModel._replace_module](#_replace_module)
+
+
 ## 参数
 
 - **model** (`torch.nn.Module`): 要适配的模型
@@ -76,14 +84,6 @@ lora_model = get_peft_model(model, config)
 
 
 # method
-
-**核心方法** ：
-- [_create_and_replace](#_create_and_replace)
-  - [_create_new_module (static)](#_create_new_modulestatic)
-    - [dispatch_default](LoraLayer.md#dispatch_default)
-      - [Linear.\_\_init\_\_](Linear.md#__init__)
-  - [_replace_module](#_replace_module)
-
 
 ## 配置和准备方法
 
