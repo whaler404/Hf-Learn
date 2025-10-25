@@ -4,6 +4,15 @@
 
 本文档提供了 🤗 Transformers 库中 `Trainer` 类的完整方法参考。`Trainer` 类是一个功能强大且易于使用的训练框架，专为 Transformer 模型优化。
 
+核心方法
+- [init](./initialization.md#参数)
+- [_inner_training_loop](./training_loop.md#核心训练循环-lines-2578-2678)
+    - [核心训练循环](training_loop.md#核心训练循环-lines-2578-2678)
+        - [training_step](./training_loop.md#training_step)
+            - [核心训练流程](./training_loop.md#核心训练流程-lines-4010-4020-4050-4073)
+                - [compute_loss](./training_loop.md#compute_loss)
+        - [梯度更新和训练完成](./training_loop.md#梯度更新和训练完成-lines-2692-2856)
+
 ### 快速开始
 
 ```python
