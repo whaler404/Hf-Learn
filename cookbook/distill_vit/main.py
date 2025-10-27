@@ -19,6 +19,8 @@ from transformers import (
 
 from datasets import load_dataset
 
+torch.set_float32_matmul_precision('high')  # 或 'medium'
+
 # ----------------------------
 # 1) 数据模块：ImageNet-1k
 # ----------------------------
@@ -125,13 +127,12 @@ class DistillViT(pl.LightningModule):
         num_student_layers: int = 3,
         teacher_match_layers: List[int] = (3, 7, 11),  # 教师层（1-based, 与 HF hidden_states 对齐见下）
         student_match_layers: List[int] = (0, 1, 2),   # 学生层（1-based）
-        temperature: float = 4.0,
-        alpha_logits: float = 0.5,  # logits 蒸馏权重
-        alpha_layers: float = 0.5,  # 层蒸馏权重
-        lr: float = 5e-5,
+        temperature: float = 3.0,
+        alpha_logits: float = 0.3,  # logits 蒸馏权重
+        alpha_layers: float = 0.3,  # 层蒸馏权重
+        lr: float = 1e-4,
         weight_decay: float = 0.05,
         num_classes: int = 1000,
-        seed_from_teacher_prefix: bool = True,  # True：用教师前几层权重初始化学生
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -243,10 +244,10 @@ class DistillViT(pl.LightningModule):
 
         # 日志
         self.log_dict({
-            "train/hard_ce": hard_loss,
-            "train/kd_logits": logits_kd,
-            "train/kd_layers": layers_kd,
-            "train/loss": loss,
+            "train_hard_ce": hard_loss,
+            "train_kd_logits": logits_kd,
+            "train_kd_layers": layers_kd,
+            "train_loss": loss,
         }, prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
 
         return loss
@@ -262,8 +263,8 @@ class DistillViT(pl.LightningModule):
         acc1 = (preds == labels).float().mean()
 
         self.log_dict({
-            "val/loss": val_loss,
-            "val/acc1": acc1,
+            "val_loss": val_loss,
+            "val_acc1": acc1,
         }, prog_bar=True, on_epoch=True, sync_dist=True)
 
         return {"val_loss": val_loss, "acc1": acc1}
@@ -305,39 +306,43 @@ def main():
     pl.seed_everything(42)
 
     # 使用类的默认值
-    # IMAGENET_ROOT = "datasets/imagenet-1k-subset/data"  
-    # BATCH_SIZE = 64 
-    # NUM_WORKERS = 8 
-    # MAX_EPOCHS = 50
-    # ACCELERATOR = "gpu" if torch.cuda.is_available() else "auto"
-    # DEVICES = "auto"
-
-    IMAGENET_ROOT = "datasets/imagenet-1k-subset-tiny/data"  
-    BATCH_SIZE = 16
+    IMAGENET_ROOT = "datasets/imagenet-1k-subset/data"  
+    BATCH_SIZE = 64
     NUM_WORKERS = 8 
-    MAX_EPOCHS = 10
+    MAX_EPOCHS = 50
     ACCELERATOR = "gpu" if torch.cuda.is_available() else "auto"
     DEVICES = "auto"
 
-    dm = ImageNetDataModule(
-        data_dir=IMAGENET_ROOT,
-        batch_size=BATCH_SIZE,
-        num_workers=NUM_WORKERS,
-    )
-    dm.setup()
+    # IMAGENET_ROOT = "datasets/imagenet-1k-subset-tiny/data"  
+    # BATCH_SIZE = 16
+    # NUM_WORKERS = 8 
+    # MAX_EPOCHS = 10
+    # ACCELERATOR = "gpu" if torch.cuda.is_available() else "auto"
+    # DEVICES = "auto"
 
-    model = DistillViT(num_classes=dm.num_classes)
+    # dm = ImageNetDataModule(
+    #     data_dir=IMAGENET_ROOT,
+    #     batch_size=BATCH_SIZE,
+    #     num_workers=NUM_WORKERS,
+    # )
+    # dm.setup()
+
+    # model = DistillViT(num_classes=dm.num_classes)
+
+    from prepare_dataset import train_loader, val_loader
+
+    model = DistillViT(teacher_name_or_path="trainer_output/distill_vit/teacher-vit", num_classes=3)
 
     ckpt_cb = ModelCheckpoint(
         dirpath="trainer_output/distill_vit",
-        monitor="val/acc1",
+        monitor="val_acc1",
         mode="max",
         save_top_k=3,
         filename="student-vit-{epoch:02d}-{val_acc1:.4f}",
         auto_insert_metric_name=False,
     )
     es_cb = EarlyStopping(
-        monitor="val/acc1",
+        monitor="val_acc1",
         mode="max",
         patience=10,
     )
@@ -356,7 +361,8 @@ def main():
         deterministic=False,
     )
 
-    trainer.fit(model, dm)
+    # trainer.fit(model, dm)
+    trainer.fit(model, train_loader, val_loader)
 
 
 if __name__ == "__main__":
